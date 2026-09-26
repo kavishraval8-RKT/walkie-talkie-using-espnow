@@ -254,6 +254,127 @@ Symptom guide:
 
 ---
 
+## Improving audio quality (software tweaks)
+
+Work through these in order. Change one constant at a time, upload to **both** boards, and
+listen before changing the next. Audio quality here is limited by the 8-bit DAC and a small
+speaker, so the goal is a clear, intelligible voice rather than hi-fi.
+
+### 1. Set the audio bandwidth (fixes muffled voice)
+
+Speech intelligibility depends on frequencies up to about 3.5 kHz, and consonants such as
+"s", "t" and "f" sit above 2.5 kHz. Two constants decide how much of that survives:
+`SAMPLE_RATE` (must be at least twice the highest frequency) and `LP_ALPHA` (low-pass
+cutoff):
+
+$$f_c = -\frac{f_s}{2\pi}\ln(1 - \alpha_{lp})$$
+
+Cutoff for common values at $f_s = 16$ kHz:
+
+| `LP_ALPHA` | Cutoff $f_c$ | Sound |
+|---|---|---|
+| 0.5 | about 1.8 kHz | Very muffled, very little hiss |
+| 0.6 | about 2.3 kHz | Muffled |
+| 0.7 | about 3.1 kHz | Telephone-like |
+| 0.8 | about 4.1 kHz | Default, clear speech |
+| 0.9 | about 5.9 kHz | Bright, more hiss |
+
+If the voice is still dull at 0.9, check that the ADC keeps up with the sample rate (see
+step 5).
+
+### 2. Tune the noise gate (fixes idle hiss and cut-off words)
+
+The gate silences the output when nobody is speaking. Two failure modes:
+
+- Hiss between words: `GATE_OPEN` is too low. Raise `GATE_OPEN` and `GATE_CLOSE` together
+  (for example 35 / 20), keeping `GATE_CLOSE` below `GATE_OPEN`.
+- Word beginnings clipped: `GATE_OPEN` is too high. Lower both (for example 15 / 8).
+
+To find the right values, print the envelope `env` in `doTransmit()` while holding the
+button in a quiet room, then while speaking, and put `GATE_OPEN` between the two readings.
+Do not print to Serial during normal use, because it interrupts the sample timing and adds
+crackle.
+
+### 3. Set gain without clipping
+
+`SOFT_GAIN` multiplies the filtered signal before it is scaled to 8 bits:
+
+$$s[n] = \mathrm{clip}\left(128 + \frac{G\, g[n]\, y[n]}{16},\ 0,\ 255\right)$$
+
+- Too low: the voice is quiet and the noise floor is a large share of the signal.
+- Too high: loud speech reaches 0 or 255 and is clipped, which sounds harsh and distorted.
+  Lower `SOFT_GAIN` if the voice sounds "buzzy" when you speak loudly or close to the mic.
+- Software gain also amplifies noise. For a quiet voice, prefer raising the volume knob on
+  the amplifier, or the MAX9814 GAIN pin (GND = 50 dB, floating = 60 dB), over a large
+  `SOFT_GAIN`.
+
+Good starting range: `SOFT_GAIN` 2 to 4.
+
+### 4. Size the jitter buffer
+
+The receiver waits for `PREBUFFER` samples before playing, which adds delay but absorbs
+lost or late packets:
+
+$$t_{buffer} = \frac{\text{PREBUFFER}}{f_s}$$
+
+At 512 samples and 16 kHz this is 32 ms. If you hear dropouts or stutter, increase it to
+768 or 1024 (48 to 64 ms). If the conversation feels laggy, decrease it to 384. The ring
+buffer (`RB_SIZE`, 2048 samples) must stay larger than `PREBUFFER`.
+
+### 5. Keep the sample timing exact
+
+The sketch samples on a `micros()` schedule. If the loop cannot finish within one sample
+period $1/f_s$, the effective sample rate drops and the voice sounds slow and low-pitched.
+
+- Each sample uses two ADC reads. If the voice is slow, use one read per sample: replace
+  `(analogRead(PIN_MIC) + analogRead(PIN_MIC)) * 0.5f` with `analogRead(PIN_MIC)`, or
+  reduce `SAMPLE_RATE` to 12000.
+- Keep `Serial.print` calls out of the transmit loop and out of the audio playback path.
+- Do not add long `delay()` calls in `loop()`.
+
+### 6. Optional code changes to try
+
+These are not in the default sketch and have not been tested on the hardware. Try one at a
+time.
+
+**Hold the last sample on underrun.** When the buffer runs dry, the receiver currently
+outputs mid-scale (128), which can produce a click. Holding the last value is quieter.
+Add `static uint8_t lastOut = 128;` in `doReceive()`, set `lastOut = rb[tail];` when a
+sample is played, and write `dacWrite(PIN_DAC, lastOut)` instead of `128` on underrun.
+
+**Pre-emphasis for a brighter voice.** A gentle high-frequency boost before the low-pass
+filter can counter the dull sound of the DAC and speaker:
+
+$$a'[n] = a[n] - \beta\, a[n-1], \qquad \beta \approx 0.3 \text{ to } 0.5$$
+
+It also boosts hiss, so raise `GATE_OPEN` and `GATE_CLOSE` after enabling it.
+
+**Simple output smoothing.** Averaging each received sample with the previous one (a
+two-point moving average) removes some of the 8-bit stair-step noise at the cost of some
+brightness.
+
+### 7. Hardware that helps as much as software
+
+- Speak 5 to 10 cm from the MAX9814. Too close overloads it, too far picks up room noise.
+- Mount the speaker in a small closed enclosure. A bare speaker in open air sounds thin.
+- Put a 10 uF and a 100 nF capacitor across MAX9814 VDD and GND, and keep the mic wires
+  short and away from the speaker wires.
+- An RC low-pass on the DAC output (about 470 ohm in series with 47 nF to ground) smooths
+  the stair-step quantisation noise.
+- Longer-term, an I2S microphone and an I2S amplifier remove the 8-bit DAC limit (see the
+  roadmap).
+
+### Recommended tuning procedure
+
+1. Start with the defaults (`SAMPLE_RATE` 16000, `LP_ALPHA` 0.8, `SOFT_GAIN` 3).
+2. Set the amplifier knob to a comfortable level, then adjust `SOFT_GAIN` until loud speech
+   does not distort.
+3. Adjust `GATE_OPEN` and `GATE_CLOSE` until idle hiss disappears and word starts are not cut.
+4. Adjust `LP_ALPHA` for the best balance between clarity and hiss.
+5. Adjust `PREBUFFER` until dropouts stop with the lowest delay.
+
+---
+
 ## Known limitations
 
 - Half-duplex only. The transmitting unit cannot hear the other side.

@@ -54,6 +54,10 @@ gate), and the ESP32's on-chip 8-bit DAC feeding a small class-D amplifier.
 
 ## Hardware
 
+### Schematic
+
+![Walkie-talkie wiring schematic](docs/schematic.png)
+
 ### Bill of materials (per unit, build two)
 
 | Part | Qty | Notes |
